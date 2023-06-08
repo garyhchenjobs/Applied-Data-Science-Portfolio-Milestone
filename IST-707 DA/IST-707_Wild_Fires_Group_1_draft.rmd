@@ -1,0 +1,511 @@
+---
+title: "Wildfire Occurrences"
+author: "Gary Chen, Seth Dogbey, Richard Romero, Matthew Smith, Daniel Stalica"
+date: "06/26/2022"
+output: word_document
+---
+```{r}
+setwd('C:/Users/Gary/Desktop/IST-707/Project')
+```
+# Introduction
+
+```{r}
+# Read in CSV File (Will be unique to user)
+#Importing packages
+library(readr)
+
+# Needed to introduce tuning parameters for machine learning
+library(caret) # Machine Learning
+library(caretEnsemble) # To ensemble predictions
+library(questionr)# Required run Naive in caret
+library(klaR) # Required for Naive Bayes in caret
+library(e1071) # Required for Naive Bayes faster
+
+# Needed for Decision tree model and plot
+library(rpart) # decision tree
+library(rpart.plot) # used for model plot
+library(rattle) # used for model plot
+library(binda)
+library(C50)#used for Decision Tree tuning
+#library(plyr)#used for Decision Tree tuning
+library(dplyr)
+library (Hmisc)
+library (psych)
+library (SmartEDA)
+library (skimr)
+
+library (gbm)
+library (mlbench)
+
+library (gmodels)
+library (vcd)
+
+library (party)
+library (Amelia)
+library (lubridate)
+library (imputeTS)
+library (missForest)
+library (nnet)
+library (maps)
+library (ggmap)
+library (mapproj)
+library (tidyverse)
+library (kernlab)
+library(naniar)
+library(visdat)
+
+library(arules)
+library(arulesViz)
+
+library(factoextra)
+library(ggplot2)
+library(cluster)
+library(randomForest)
+```
+
+# Data Prep
+```{r}
+# Fire Data Cleansing
+
+# Read in CSV File (Will be unique to user)
+fires <- read.csv("C:/Users/Gary/Desktop/IST-707/Project/FireData.csv", na.strings = c(""))
+# View Structure
+#str(fires)
+
+# Convert FOD_ID to factor
+fires$FOD_ID <- factor(fires$FOD_ID)
+
+# Convert DISCOVERY_DATE and CONT_DATE to date
+fires$DISCOVERY_DATE <- as.Date(fires$DISCOVERY_DATE)
+fires$CONT_DATE <- as.Date(fires$CONT_DATE)
+
+# Calculate Resolution/Containment Time
+fires$RESOLUTION_DAYS <- as.numeric(difftime(fires$CONT_DATE, fires$DISCOVERY_DATE, units = c("days")))
+str(fires)
+
+# Bin Fire Size
+SIZE_BIN <- cut(fires$FIRE_SIZE, breaks = c(0,25,50,100,200,400,800,1600,3200,6400,Inf), labels = c("1-25","25-50","50-100","100-200","200-400","400-800","800-1600","1600-3200","3200-6400",">6400"))
+fires$SIZE_BIN <- SIZE_BIN
+
+# Bin Resolution Days
+RESOLUTION_BIN <- cut(fires$RESOLUTION_DAYS, breaks = c(-1,0,7,14,28,56,112,224,448,896,Inf), labels = c("< 1","1-7","7-14","14-28","28-56","56-112","112-224","224-448","448-896",">896"))
+fires$RESOLUTION_BIN <- RESOLUTION_BIN
+
+# Bin Season
+SEASON <- cut(fires$DISCOVERY_DOY, breaks = c(0,79,162,265,355,365), labels = c("Winter", "Spring", "Summer", "Fall", "Winter"))
+fires$SEASON <- SEASON
+
+
+fires %>% count(SIZE_BIN)
+fires %>% count(RESOLUTION_BIN)
+
+#View(fires)
+```
+
+# Gary's Decision Tree Portion
+
+```{r}
+
+#choosing the variables to evaluated for the Seasonality Decision Tree
+myVars=c(#"SOURCE_SYSTEM_TYPE"
+#, "SOURCE_REPORTING_UNIT_NAME"
+#, "DISCOVERY_TIME"
+ "NWCG_CAUSE_CLASSIFICATION"
+, "NWCG_GENERAL_CAUSE"
+#, "STATE"
+, "SIZE_BIN"
+, "RESOLUTION_BIN"
+, "SEASON")
+
+
+#shuffle_index <- sample(1:nrow(fires))
+
+#shuffle_fire <- fires[shuffle_index,]
+
+
+#Sample a smaller section of our data set
+shuffle_fire <- fires[c(TRUE,rep(FALSE,9)),]
+
+
+#str(shuffle_fire)
+
+D_fire_tree <- shuffle_fire[myVars]
+D_fire_tree <- D_fire_tree[complete.cases(D_fire_tree),]
+str(D_fire_tree)
+
+ 
+D_fire_tree <- D_fire_tree %>% 
+  mutate_if(is.character, funs(as.factor)) %>% 
+  mutate_if(is.numeric, funs(as.factor))
+
+str(D_fire_tree)
+
+indxTrain <- createDataPartition(y = D_fire_tree$SEASON,p = 0.75,list = FALSE)
+D_fire_train <- D_fire_tree[indxTrain,]
+D_fire_test <- D_fire_tree[-indxTrain,]
+
+#str(D_fire_train)
+```
+
+```{r}
+# Set control cross validation of 5
+control_value <- trainControl(method ='cv',number = 5)
+
+# Use accuracy Metric as comparison
+metric_value <-  "Accuracy"
+
+```
+
+# Seasonality Decesion Tree
+
+```{r}
+# Decision Tree
+set.seed(5)
+d_tree_model <- train(SEASON ~ ., data = D_fire_train, method='rpart', metric=metric_value, trControl=control_value, na.action=na.exclude)
+```
+```{r}
+print(d_tree_model)
+plot(d_tree_model)
+```
+
+```{r}
+tree <- rpart(SEASON ~., data = D_fire_train, cp = 0.02612712)
+rpart.plot(tree)
+
+print(rpart.rules(tree))
+```
+
+# Decision Tree for Resolution Bin sizes
+
+```{r}
+#Decision Tree for Resolution Bin sizes.
+myVars3=c(#"SOURCE_SYSTEM_TYPE"
+  #, "SOURCE_REPORTING_UNIT_NAME"
+  #, "DISCOVERY_TIME"
+  #"NWCG_CAUSE_CLASSIFICATION"
+   #"NWCG_GENERAL_CAUSE"
+  #, "STATE"
+   "SIZE_BIN"
+  , "RESOLUTION_BIN"
+  , "SEASON")
+
+R_fire_train_bin <- D_fire_train[myVars3]
+str(R_fire_train_bin)
+
+set.seed(5)
+rbin_tree_model <- train(RESOLUTION_BIN  ~ ., data = R_fire_train_bin, method='rpart', metric=metric_value, trControl=control_value, na.action=na.exclude)
+```
+```{r}
+print(rbin_tree_model)
+plot(rbin_tree_model)
+
+rbin_tree <- rpart(RESOLUTION_BIN ~ ., data = R_fire_train_bin, method = "class",na.action=na.exclude) #, cp = 0.001800991)
+rpart.plot(rbin_tree) #, box.palette = "blue")
+
+print(rpart.rules(rbin_tree))
+```
+
+# Richard's NB portion
+
+```{r}
+# Creating Predictive Models and seeing which one is the best.
+# Naive Bayes Model
+# First using the attributes I think that would be most useful
+myVarsNB = c('SEASON', 'STATE', 'NWCG_CAUSE_CLASSIFICATION', 'FIRE_YEAR', 'SIZE_BIN', 'RESOLUTION_DAYS', 'DISCOVERY_TIME', 'NWCG_GENERAL_CAUSE','SOURCE_REPORTING_UNIT_NAME')
+DirtyNBFire = fires
+
+DirtyNBFire = DirtyNBFire[myVarsNB]
+sum(!complete.cases(DirtyNBFire))
+
+#GARY ADDED to get to store NBFire variable
+NBFire <- DirtyNBFire[complete.cases(DirtyNBFire), ]
+
+set.seed(123)
+#Output is Fire Class size so changing it to a factor
+str(NBFire)
+NBFire$NWCG_CAUSE_CLASSIFICATION = as.factor(NBFire$NWCG_CAUSE_CLASSIFICATION)
+NBFire$STATE = as.factor(NBFire$STATE)
+NBFire$SEASON = as.factor(NBFire$SEASON)
+NBFire$SIZE_BIN = as.factor(NBFire$SIZE_BIN)
+NBFire$FIRE_YEAR = as.factor(NBFire$FIRE_YEAR)
+#NBFire$FIRE_SIZE = as.factor(NBFire$FIRE_SIZE)
+NBFire$DISCOVERY_TIME = as.factor(NBFire$DISCOVERY_TIME)
+NBFire$RESOLUTION_DAYS = as.factor(NBFire$RESOLUTION_DAYS)
+NBFire$NWCG_GENERAL_CAUSE = as.factor(NBFire$NWCG_GENERAL_CAUSE)
+NBFire$SOURCE_REPORTING_UNIT_NAME = as.factor(NBFire$SOURCE_REPORTING_UNIT_NAME)
+```
+# NB Model
+
+```{r}
+## Creating the Naive Bayes Model
+#subsetting the training and testing data 
+indxTrain <- createDataPartition(y = NBFire$SIZE_BIN,p = 0.75,list = FALSE)
+NBFiretraining <- NBFire[indxTrain,]
+NBFiretesting <- NBFire[-indxTrain,]
+
+prop.table(table(NBFiretraining$SIZE_BIN)) * 100
+prop.table(table(NBFiretesting$SIZE_BIN)) * 100
+
+x = NBFiretraining[,-5]
+y = NBFiretraining$SIZE_BIN
+
+NB10 = train(x,y,'nb',trControl=trainControl(method='cv',number=10))
+
+#NB10
+
+NB5 = train(x,y,'nb',trControl=trainControl(method='cv',number=5))
+
+#NB5
+
+NB3 = train(x,y,'nb',trControl=trainControl(method='cv',number=3))
+
+#NB3
+```
+```{r}
+NB10
+NB5
+NB3
+
+```
+```{r}
+NBPredict10 <- predict(NB10,newdata = NBFiretesting )
+#table(NBPredict10)
+```
+
+```{r}
+NBPredict5 <- predict(NB5,newdata = NBFiretesting ) 
+#table(NBPredict5)
+```
+
+```{r}
+NBPredict3 <- predict(NB3,newdata = NBFiretesting ) 
+#table(NBPredict3)
+```
+
+```{r}
+#table(NBPredict10)
+#table(NBPredict5)
+#table(NBPredict3)
+```
+
+```{r}
+confusionMatrix(NBPredict10, NBFiretesting$SIZE_BIN)
+confusionMatrix(NBPredict5, NBFiretesting$SIZE_BIN)
+confusionMatrix(NBPredict3, NBFiretesting$SIZE_BIN)
+```
+```{r}
+ModelPerformance <- varImp(NB3)
+plot(ModelPerformance)
+```
+
+```{r}
+### Plotting
+cm <- confusionMatrix(factor(NBPredict3), factor(NBFiretesting$SIZE_BIN), dnn = c("Prediction", "Reference"))
+
+plt <- as.data.frame(cm$table)
+plt$Prediction <- factor(plt$Prediction, levels=rev(levels(plt$Prediction)))
+
+ggplot(plt, aes(Prediction,Reference, fill= Freq)) +
+  geom_tile() + geom_text(aes(label=Freq)) +
+  scale_fill_gradient(low="green", high="#009194") +
+  labs(x = "Reference",y = "Prediction") +
+  scale_x_discrete(labels=c(">6400","3200-6400","1600-3200","800-1600","400-800","200-400","100-200","50-100","25-50","1-25"))
+scale_y_discrete(labels=c("1-25","25-50","50-100","100-200","200-400","400-800","800-1600","1600-3200","3200-6400",">6400")) 
+```
+
+# Random Forest
+
+```{r}
+### Running RF Model to compare to Naive Bayes Results
+
+RFFiretesting <- NBFiretesting
+RFFiretraining <- NBFiretraining
+
+
+RFFiretesting$RESOLUTION_DAYS <- as.numeric(RFFiretesting$RESOLUTION_DAYS)
+RFFiretesting$DISCOVERY_TIME <- as.numeric(RFFiretesting$DISCOVERY_TIME)
+RFFiretraining$RESOLUTION_DAYS <- as.numeric(RFFiretraining$RESOLUTION_DAYS)
+RFFiretraining$DISCOVERY_TIME <- as.numeric(RFFiretraining$DISCOVERY_TIME)
+```
+```{r}
+#str(RFFiretesting)
+#str(RFFiretraining)
+```
+
+```{r}
+RFModel3 <- train(SIZE_BIN ~ . , 
+               data = RFFiretraining[1:10000, ], # Use the train data frame as the training data
+               method = 'rf',# Use the 'random forest' algorithm
+               trControl = trainControl(method = 'cv', # Use cross-validation
+                                        number = 3)) # Use 5 folds for cross-validation
+
+RFModel5 <- train(SIZE_BIN ~ . , 
+                     data = RFFiretraining[1:10000, ], # Use the train data frame as the training data
+                     method = 'rf',# Use the 'random forest' algorithm
+                     trControl = trainControl(method = 'cv', # Use cross-validation
+                                              number = 3)) # Use 5 folds for cross-validation
+```
+
+```{r}
+#fit_rf<-randomForest(SIZE_BIN~.,
+#data=RFFiretraining[1:10000, ],
+#                    )
+
+#PredRF <- predict(fit_rf, RFFiretesting)
+#PredRF
+
+#table(PredRF)
+```
+
+
+# Seth's Assocation Rule Minning Part
+
+```{r}
+# generate rules
+
+rules <- apriori(fires, parameter = list(supp = 0.1, conf = 0.9, maxlen = 3))
+```
+ 
+```{r}
+#Plotting rules
+
+plot(rules)
+```
+ 
+```{r}
+#Subsetting some relevant columns for association rule mining; general cause and fire size_bin
+
+firesAssoc<-fires[,c(24,39)]
+
+ 
+
+# generate rules
+
+rulesAssoc <- apriori(firesAssoc, parameter = list(supp = 0.001, conf = 0.8, maxlen = 3))
+```
+ 
+```{r}
+#Viewing the rules generated
+
+inspect(rulesAssoc)
+```
+
+# Matthew's Clustering part
+
+```{r}
+#Cut down size of the data
+FireDataV2 <- fires
+Wildfires <- FireDataV2
+WildfiresFinal <- Wildfires[1:2000,]
+
+
+#Fire Cause Labels
+firecause.labels = WildfiresFinal$NWCG_GENERAL_CAUSE
+table(firecause.labels)
+#Fire Cause Variables
+firecause.data <- data.frame(
+                             WildfiresFinal$DISCOVERY_TIME,
+                             WildfiresFinal$CONT_TIME,
+                             WildfiresFinal$FIRE_SIZE)
+
+
+#View(firecause.data)
+```
+
+```{r}
+#Scale the data
+Wildfire.scale <- scale(firecause.data)
+
+#Develop our understanding of distance
+firecause.data <- dist(Wildfire.scale)
+
+#Calculating how many clusters needed
+#With the elbow method. The sum of squares.
+fviz_nbclust(Wildfire.scale, kmeans, method = "wss") +
+  labs(subtitle = "Elbow Method")
+```
+
+```{r}
+#Kmeans Clustering
+km.fires <- kmeans(Wildfire.scale, centers = 8, nstart = 100)
+#print(km.fires)
+```
+
+```{r}
+#Visualize the clustering results
+kmcluster.fires <- km.fires$cluster
+rownames(Wildfire.scale) <- paste(WildfiresFinal$NWCG_GENERAL_CAUSE,
+                                  1:dim(WildfiresFinal)[1], sep = "-")
+#Wildfire.scale
+
+fviz_cluster(list(data = Wildfire.scale, cluster = kmcluster.fires))
+
+#Look at clusters as a crosstab or datatable
+table(kmcluster.fires, WildfiresFinal$NWCG_GENERAL_CAUSE)
+
+#Aggregate the means of the clusters to get an understanding of the avg
+#difference of variables within each cluster.
+aggregate(Wildfire.scale, by=list(cluster=kmcluster.fires), mean)
+```
+
+```{r}
+#---------------------------------------------------------------------
+
+##Retry Kmeans Cluster with only varaibles: FIRE SIZE & Days Needed To Out Fire
+
+
+#Cut down size of the data
+Wildfires <- FireDataV2
+WildfiresFinal <- Wildfires[1:2000,]
+
+#Create a containment time variable
+
+WildfiresFinal$Resolvetime <- WildfiresFinal$CONT_DOY - 
+  WildfiresFinal$DISCOVERY_DOY
+
+#View(WildfiresFinal) 
+
+
+
+#Fire Cause Labels
+firecause.labels = WildfiresFinal$NWCG_GENERAL_CAUSE
+table(firecause.labels)
+#Fire Cause Variables
+firecause.data <- data.frame(
+  WildfiresFinal$Resolvetime,
+  WildfiresFinal$FIRE_SIZE)
+
+
+#View(firecause.data)
+
+#Scale the data
+Wildfire.scale <- scale(firecause.data)
+
+#Develop our understanding of distance
+firecause.data <- dist(Wildfire.scale)
+
+#Calculating how many clusters needed
+#With the elbow method. The sum of squares.
+fviz_nbclust(Wildfire.scale, kmeans, method = "wss") +
+  labs(subtitle = "Elbow Method")
+
+
+#Kmeans Clustering
+km.fires <- kmeans(Wildfire.scale, centers = 4, nstart = 100)
+print(km.fires)
+
+#Visualize the clustering results
+kmcluster.fires <- km.fires$cluster
+rownames(Wildfire.scale) <- paste(WildfiresFinal$NWCG_GENERAL_CAUSE,
+                                  1:dim(WildfiresFinal)[1], sep = "-")
+Wildfire.scale
+
+fviz_cluster(list(data = Wildfire.scale, cluster = kmcluster.fires))
+
+#Look at clusters as a crosstab or datatable
+table(kmcluster.fires, WildfiresFinal$NWCG_GENERAL_CAUSE)
+
+#Aggregate the means of the clusters to get an understanding of the avg
+#difference of variables within each cluster.
+aggregate(Wildfire.scale, by=list(cluster=kmcluster.fires), mean)
+```
